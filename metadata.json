@@ -1,0 +1,8 @@
+{
+  "name": "CanvaToCode Converter",
+  "description": "Seamlessly import your Canva websites into a professional editor for advanced customization and enhanced control.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

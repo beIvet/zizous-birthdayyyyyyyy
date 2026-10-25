@@ -1,0 +1,160 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'Arimo';
+  src: url('/_assets/fonts/834f64ff415fb8f4f5d92d8fd40507e9.woff') format('woff');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Arimo';
+  src: url('/_assets/fonts/711f50b3a8c00bb7e2e05ef85f982cb6.woff') format('woff');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Arimo';
+  src: url('/_assets/fonts/0803f40e19a074a5520c2746a6ba3c95.woff') format('woff');
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Arimo';
+  src: url('/_assets/fonts/b07201e0e9fc452103c1c0345b0e7c1d.woff') format('woff');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Lucida Calligraphy';
+  src: url('/_assets/fonts/b38d3791743d8a55c95afb0564fc35f7.woff') format('woff');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Lucida Calligraphy';
+  src: url('/_assets/fonts/a620f90aac3ca8def7d398a96d77e602.woff') format('woff');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Lucida Calligraphy';
+  src: url('/_assets/fonts/de7e4bd7e337cddc2dc7c5f215c90e15.woff') format('woff');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Lucida Calligraphy';
+  src: url('/_assets/fonts/f8955c285d76468752227b2fefcbb40a.woff') format('woff');
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Canva Sans';
+  src: url('/_assets/fonts/8461fcb69f64bc53c83df66f88d997e5.woff') format('woff');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Canva Sans';
+  src: url('/_assets/fonts/6f33b662dba0705347f24c030f2a9c18.woff') format('woff');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Gladiola';
+  src: url('/_assets/fonts/fa76d1603a64c66574595116d9040661.woff') format('woff');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Antic';
+  src: url('/_assets/fonts/6f5eea03a3c8870185ad90dfba29cd4a.woff') format('woff');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Arial';
+  src: url('/_assets/fonts/99144afa780bca8d91e350db22e2e069.woff') format('woff');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Arial';
+  src: url('/_assets/fonts/c10218bd840d8398e45eb43463fd5a56.woff') format('woff');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Arial';
+  src: url('/_assets/fonts/186067f500c684b4b1c612a2c129f663.woff') format('woff');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Arial';
+  src: url('/_assets/fonts/4b7c8d9e7d2f4cdd7c46f87b020cc316.woff') format('woff');
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Architype Stedelijk';
+  src: url('/_assets/fonts/52057a1c90ab6c44e082776e3ae5cb50.woff') format('woff');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Alice';
+  src: url('/_assets/fonts/599c9cf17ada6ba873d2ff117c981ab5.woff') format('woff');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  body {
+    font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+
+  .font-mono-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
