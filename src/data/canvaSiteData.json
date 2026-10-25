@@ -3148,10 +3148,10 @@
               "dropShadow": null,
               "type": "video",
               "media": {
-                "src": "/_assets/video/48ad4e09a2a0ac22567a56ae8b815f31.mp4",
+                "src": "/assets/aistudio/2026-10-25_20-55-41_-_Trim_c844c9ee.mp4",
                 "isGif": false,
-                "loop": false,
-                "volume": 1,
+                "loop": true,
+                "volume": 0.9,
                 "trimEndSec": null,
                 "crop": {
                   "y": -536.18,

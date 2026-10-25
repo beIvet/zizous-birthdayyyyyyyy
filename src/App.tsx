@@ -1,13 +1,20 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  CheckCircle2,
+  Clock,
   Download,
   Eye,
   EyeOff,
+  History,
   List,
+  Loader2,
+  Music,
   Pencil,
   Play,
   RotateCcw,
+  Save,
+  ShieldCheck,
   Sparkles,
   Undo2,
   Redo2,
@@ -17,22 +24,35 @@ import {
   X,
 } from 'lucide-react';
 import rawCanvaData from './data/canvaSiteData.json';
-import { CanvaPage, CanvasElement, SelectedElementRef, SiteData } from './types/site';
+import {
+  BackgroundMusicConfig,
+  CanvaPage,
+  CanvasElement,
+  SaveSnapshot,
+  SelectedElementRef,
+  SiteData,
+} from './types/site';
 import {
   clearSavedSiteData,
+  createManualSnapshot,
+  deleteSnapshot,
   generateId,
+  getSavedSnapshots,
   getScrollingLetterInfo,
   loadSavedSiteData,
   mergeAnimationsIfMissing,
   parseEmbedInput,
   resolveLinkToPageIndex,
   saveSiteData,
+  saveSiteDataSync,
   ungroupElement,
 } from './utils/siteHelpers';
 import { PageStage } from './components/PageStage';
 import { PageSidebar } from './components/PageSidebar';
 import { InspectorPanel } from './components/InspectorPanel';
 import { LetterComposerModal } from './components/LetterComposerModal';
+import { BackupsModal } from './components/BackupsModal';
+import { AudioSettingsModal } from './components/AudioSettingsModal';
 
 const INITIAL_SITE_DATA = rawCanvaData as unknown as SiteData;
 const MAX_HISTORY = 35;
@@ -65,6 +85,12 @@ export function App() {
   const [animReplayKey, setAnimReplayKey] = useState<number>(0);
   const [candleBlowing, setCandleBlowing] = useState<boolean>(false);
 
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved');
+  const [lastSavedFormatted, setLastSavedFormatted] = useState<string>('just now');
+  const [historyModalOpen, setHistoryModalOpen] = useState<boolean>(false);
+  const [musicModalOpen, setMusicModalOpen] = useState<boolean>(false);
+  const [snapshots, setSnapshots] = useState<SaveSnapshot[]>([]);
+
   const pastRef = useRef<SiteData[]>([]);
   const futureRef = useRef<SiteData[]>([]);
   const latestCommittedRef = useRef<SiteData>(siteData);
@@ -73,10 +99,39 @@ export function App() {
   const importJsonInputRef = useRef<HTMLInputElement | null>(null);
   const addImageInputRef = useRef<HTMLInputElement | null>(null);
   const clickSfxRef = useRef<HTMLAudioElement | null>(null);
+  const bgAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const showToast = useCallback((msg: string) => {
     setToastMsg(msg);
   }, []);
+
+  const refreshSnapshots = useCallback(async () => {
+    try {
+      const list = await getSavedSnapshots();
+      setSnapshots(list);
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  const performSave = useCallback(
+    async (dataToSave: SiteData, createSnapshot = false, snapTitle?: string) => {
+      setSaveStatus('saving');
+      try {
+        await saveSiteData(dataToSave, createSnapshot, snapTitle);
+        setSaveStatus('saved');
+        setLastSavedFormatted(
+          new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        );
+        if (createSnapshot) {
+          refreshSnapshots();
+        }
+      } catch {
+        setSaveStatus('unsaved');
+      }
+    },
+    [refreshSnapshots]
+  );
 
   useEffect(() => {
     if (!toastMsg) return;
@@ -94,30 +149,95 @@ export function App() {
         latestCommittedRef.current = merged;
       }
       setIsLoaded(true);
+      refreshSnapshots();
     });
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [refreshSnapshots]);
 
   useEffect(() => {
     if (!isLoaded) return;
+    setSaveStatus('saving');
     const timer = setTimeout(() => {
-      saveSiteData(siteData);
-    }, 350);
+      performSave(siteData);
+    }, 280);
     return () => clearTimeout(timer);
-  }, [siteData, isLoaded]);
+  }, [siteData, isLoaded, performSave]);
 
-  const applyCommittedUpdate = useCallback((updater: (prev: SiteData) => SiteData) => {
-    setSiteData((prev) => {
-      const next = updater(prev);
-      pastRef.current = [...pastRef.current.slice(-(MAX_HISTORY - 1)), prev];
-      futureRef.current = [];
-      latestCommittedRef.current = next;
-      forceHistoryTick((n) => n + 1);
-      return next;
-    });
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (latestCommittedRef.current) {
+        saveSiteDataSync(latestCommittedRef.current);
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && latestCommittedRef.current) {
+        saveSiteDataSync(latestCommittedRef.current);
+        saveSiteData(latestCommittedRef.current).catch(() => {});
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []);
+
+  useEffect(() => {
+    const handleSaveShortcut = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        performSave(latestCommittedRef.current, true, 'User saved (Ctrl+S)');
+        showToast('✓ All changes saved securely to storage!');
+      }
+    };
+    window.addEventListener('keydown', handleSaveShortcut);
+    return () => window.removeEventListener('keydown', handleSaveShortcut);
+  }, [performSave, showToast]);
+
+  useEffect(() => {
+    const bgConfig = siteData.backgroundMusic;
+    const audioUrl = bgConfig?.url || siteData.audioTrack;
+    const isEnabled = bgConfig ? bgConfig.enabled : Boolean(siteData.audioTrack);
+
+    if (!audioUrl || !isEnabled || soundMuted) {
+      if (bgAudioRef.current) {
+        bgAudioRef.current.pause();
+      }
+      return;
+    }
+
+    if (!bgAudioRef.current || bgAudioRef.current.src !== audioUrl) {
+      bgAudioRef.current = new Audio(audioUrl);
+      bgAudioRef.current.loop = bgConfig?.loop !== false;
+    }
+    bgAudioRef.current.volume = soundMuted
+      ? 0
+      : Math.max(0, Math.min(1, bgConfig?.volume ?? 0.7));
+
+    if (bgConfig?.autoplay !== false) {
+      bgAudioRef.current.play().catch(() => {});
+    }
+  }, [siteData.backgroundMusic, siteData.audioTrack, soundMuted]);
+
+  const applyCommittedUpdate = useCallback(
+    (updater: (prev: SiteData) => SiteData) => {
+      setSiteData((prev) => {
+        const next = updater(prev);
+        pastRef.current = [...pastRef.current.slice(-(MAX_HISTORY - 1)), prev];
+        futureRef.current = [];
+        latestCommittedRef.current = next;
+        forceHistoryTick((n) => n + 1);
+        performSave(next, false);
+        return next;
+      });
+    },
+    [performSave]
+  );
 
   const commitTransientDragResize = useCallback(() => {
     setSiteData((current) => {
@@ -129,10 +249,11 @@ export function App() {
         futureRef.current = [];
         latestCommittedRef.current = current;
         forceHistoryTick((n) => n + 1);
+        performSave(current, false);
       }
       return current;
     });
-  }, []);
+  }, [performSave]);
 
   const handleUndo = useCallback(() => {
     if (pastRef.current.length === 0) return;
@@ -742,6 +863,54 @@ export function App() {
     e.target.value = '';
   };
 
+  const handleSaveAudioConfig = useCallback(
+    (trackUrl: string, config: BackgroundMusicConfig) => {
+      applyCommittedUpdate((prev) => ({
+        ...prev,
+        audioTrack: trackUrl,
+        backgroundMusic: config,
+      }));
+      performSave(
+        {
+          ...siteData,
+          audioTrack: trackUrl,
+          backgroundMusic: config,
+        },
+        true,
+        'Updated Background Music & Audio'
+      );
+      showToast('✓ Background music settings saved securely!');
+    },
+    [applyCommittedUpdate, performSave, siteData, showToast]
+  );
+
+  const handleCreateSnapshot = useCallback(
+    async (title: string) => {
+      await createManualSnapshot(latestCommittedRef.current, title);
+      await refreshSnapshots();
+      showToast(`✓ Checkpoint "${title}" saved!`);
+    },
+    [refreshSnapshots, showToast]
+  );
+
+  const handleRestoreSnapshot = useCallback(
+    (snapshot: SaveSnapshot) => {
+      applyCommittedUpdate(() => snapshot.data);
+      performSave(snapshot.data, true, `Restored: ${snapshot.title}`);
+      showToast(`✓ Restored version "${snapshot.title}"!`);
+    },
+    [applyCommittedUpdate, performSave, showToast]
+  );
+
+  const handleDeleteSnapshot = useCallback(
+    async (snapshotId: string) => {
+      await deleteSnapshot(snapshotId);
+      await refreshSnapshots();
+      showToast('Checkpoint removed');
+    },
+    [refreshSnapshots, showToast]
+  );
+
   const handleConfirmReset = async () => {
     await clearSavedSiteData();
     const fresh: SiteData = JSON.parse(JSON.stringify(INITIAL_SITE_DATA));
@@ -899,14 +1068,65 @@ export function App() {
               )}
             </nav>
 
-            <div className="flex items-center shrink-0">
+            <div className="flex items-center gap-2 shrink-0">
+              {saveStatus === 'saving' ? (
+                <span className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-amber-400/40 text-amber-300 text-xs font-medium">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                  Saving...
+                </span>
+              ) : (
+                <span
+                  title={`All edits safely stored locally. Last saved at ${lastSavedFormatted}`}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-emerald-500/30 text-emerald-400 text-xs font-medium"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  Saved
+                </span>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  performSave(latestCommittedRef.current, true, 'User saved');
+                  showToast('✓ All changes saved securely to storage!');
+                }}
+                title="Save changes now (Ctrl+S / Cmd+S)"
+                className="px-3 py-1.5 text-xs font-medium text-zinc-200 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors"
+              >
+                <Save className="w-3.5 h-3.5 text-amber-400" />
+                Save Now
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  refreshSnapshots();
+                  setHistoryModalOpen(true);
+                }}
+                title="View all automatic checkpoints & version history"
+                className="px-3 py-1.5 text-xs font-medium text-zinc-200 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors"
+              >
+                <History className="w-3.5 h-3.5 text-amber-400" />
+                Backups ({snapshots.length})
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setMusicModalOpen(true)}
+                title="Configure Background Song & Audio Track"
+                className="px-3 py-1.5 text-xs font-medium text-zinc-200 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors"
+              >
+                <Music className="w-3.5 h-3.5 text-amber-400" />
+                Background Song
+              </button>
+
               <button
                 type="button"
                 onClick={() => {
                   setSelectedRef(null);
                   setMode('preview');
                 }}
-                className="px-4 py-2 text-xs font-semibold text-zinc-950 bg-amber-400 rounded-lg hover:bg-amber-300 transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                className="px-4 py-2 text-xs font-semibold text-zinc-950 bg-amber-400 rounded-lg hover:bg-amber-300 transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ml-1"
               >
                 <Play className="w-3.5 h-3.5 fill-current" />
                 Preview Live Site
@@ -1175,6 +1395,39 @@ export function App() {
 
               <button
                 type="button"
+                onClick={() => setMusicModalOpen(true)}
+                title="Background Song & Audio Settings"
+                className="p-1.5 rounded-lg hover:bg-white/10 text-zinc-300 hover:text-amber-300 transition-colors cursor-pointer"
+              >
+                <Music className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  refreshSnapshots();
+                  setHistoryModalOpen(true);
+                }}
+                title="Version History & Backups"
+                className="p-1.5 rounded-lg hover:bg-white/10 text-zinc-300 hover:text-amber-300 transition-colors cursor-pointer"
+              >
+                <History className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  performSave(latestCommittedRef.current, true, 'User saved in preview');
+                  showToast('✓ All changes saved securely!');
+                }}
+                title="Save Now (Ctrl+S / Cmd+S)"
+                className="p-1.5 rounded-lg hover:bg-white/10 text-zinc-300 hover:text-emerald-400 transition-colors cursor-pointer"
+              >
+                <Save className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setMode('editor')}
                 className="px-3 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 text-zinc-950 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
               >
@@ -1382,6 +1635,26 @@ export function App() {
           </div>
         </div>
       )}
+
+      <BackupsModal
+        isOpen={historyModalOpen}
+        snapshots={snapshots}
+        onClose={() => setHistoryModalOpen(false)}
+        onCreateSnapshot={handleCreateSnapshot}
+        onRestoreSnapshot={handleRestoreSnapshot}
+        onDeleteSnapshot={handleDeleteSnapshot}
+        onExportJson={handleExportJson}
+        onImportJson={handleImportJson}
+      />
+
+      <AudioSettingsModal
+        isOpen={musicModalOpen}
+        pages={siteData.pages}
+        currentTrack={siteData.audioTrack}
+        currentConfig={siteData.backgroundMusic}
+        onClose={() => setMusicModalOpen(false)}
+        onSaveAudioConfig={handleSaveAudioConfig}
+      />
 
       {toastMsg && (
         <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-zinc-900 border border-amber-400/50 text-xs font-medium text-zinc-100 shadow-2xl pointer-events-none">

@@ -186,9 +186,31 @@ export const CanvasElementRenderer: React.FC<CanvasElementRendererProps> = ({
     const shouldMute = isEditor || soundMuted || rawVol <= 0;
     vid.muted = shouldMute;
     vid.volume = shouldMute ? 0 : Math.min(1, Math.max(0, rawVol));
+
+    let cleanupPointerListener: (() => void) | null = null;
     if (!isEditor) {
-      vid.play().catch(() => {});
+      const p = vid.play();
+      if (p !== undefined) {
+        p.catch(() => {
+          const handleFirstClick = () => {
+            if (videoRef.current) {
+              videoRef.current.play().catch(() => {});
+            }
+          };
+          window.addEventListener('pointerdown', handleFirstClick, { once: true });
+          cleanupPointerListener = () => {
+            window.removeEventListener('pointerdown', handleFirstClick);
+          };
+        });
+      }
     }
+
+    return () => {
+      cleanupPointerListener?.();
+      if (vid) {
+        vid.pause();
+      }
+    };
   }, [element, isEditor, soundMuted]);
 
   const isInvisibleHotspot = element.opacity <= 0.03 && Boolean(element.link);
@@ -314,8 +336,9 @@ export const CanvasElementRenderer: React.FC<CanvasElementRendererProps> = ({
 
         if (element.opacity <= 0.02 && (media.volume ?? 0) > 0 && isEditor && showHotspots) {
           return (
-            <div className="w-full h-full flex items-center justify-center bg-emerald-500/15 border border-dashed border-emerald-400/70 rounded text-emerald-200 text-[11px] px-2 truncate">
-              Audio Cue ({Math.round((media.volume ?? 0) * 100)}%)
+            <div className="w-full h-full flex items-center justify-center bg-emerald-500/20 border border-dashed border-emerald-400 rounded text-emerald-200 text-[11px] px-2 font-medium truncate select-none shadow-sm gap-1">
+              <span>🎵</span>
+              <span>Audio Cue ({Math.round((media.volume ?? 0) * 100)}%)</span>
             </div>
           );
         }
@@ -375,6 +398,7 @@ export const CanvasElementRenderer: React.FC<CanvasElementRendererProps> = ({
               loop={Boolean(media.loop)}
               muted={shouldMute}
               playsInline
+              preload="auto"
               onTimeUpdate={(e) => {
                 if (media.trimEndSec && e.currentTarget.currentTime >= media.trimEndSec) {
                   if (media.loop) {

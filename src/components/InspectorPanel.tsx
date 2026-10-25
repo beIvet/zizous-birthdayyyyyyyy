@@ -850,36 +850,74 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
 
                       {selectedElement.type === 'video' &&
                         !selectedElement.media.isGif && (
-                          <div>
-                            <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1">
-                              <span>Playback Audio Volume</span>
-                              <span className="font-mono-num">
-                                {Math.round((selectedElement.media.volume ?? 0) * 100)}%
-                              </span>
+                          <div className="space-y-3 pt-1 border-t border-zinc-800/80">
+                            <div>
+                              <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1">
+                                <span>Playback Audio Volume</span>
+                                <span className="font-mono-num text-amber-300 font-semibold">
+                                  {Math.round((selectedElement.media.volume ?? 0) * 100)}%
+                                </span>
+                              </div>
+                              <input
+                                type="range"
+                                min={0}
+                                max={100}
+                                value={Math.round(
+                                  (selectedElement.media.volume ?? 0) * 100
+                                )}
+                                onChange={(e) => {
+                                  const vol = Number(e.target.value) / 100;
+                                  onUpdateElement(
+                                    selectedRef.subpageIndex,
+                                    selectedElement.id,
+                                    (prev) =>
+                                      prev.media
+                                        ? {
+                                            ...prev,
+                                            media: { ...prev.media, volume: vol },
+                                          }
+                                        : prev
+                                  );
+                                }}
+                                className="w-full accent-amber-400"
+                              />
                             </div>
-                            <input
-                              type="range"
-                              min={0}
-                              max={100}
-                              value={Math.round(
-                                (selectedElement.media.volume ?? 0) * 100
-                              )}
-                              onChange={(e) => {
-                                const vol = Number(e.target.value) / 100;
-                                onUpdateElement(
-                                  selectedRef.subpageIndex,
-                                  selectedElement.id,
-                                  (prev) =>
-                                    prev.media
-                                      ? {
-                                          ...prev,
-                                          media: { ...prev.media, volume: vol },
-                                        }
-                                      : prev
-                                );
-                              }}
-                              className="w-full accent-amber-400"
-                            />
+
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] text-zinc-400">Loop Playback</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onUpdateElement(
+                                    selectedRef.subpageIndex,
+                                    selectedElement.id,
+                                    (prev) =>
+                                      prev.media
+                                        ? {
+                                            ...prev,
+                                            media: {
+                                              ...prev.media,
+                                              loop: !prev.media.loop,
+                                            },
+                                          }
+                                        : prev
+                                  );
+                                }}
+                                className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors cursor-pointer ${
+                                  selectedElement.media.loop
+                                    ? 'bg-amber-400/20 text-amber-300 border border-amber-400/50'
+                                    : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+                                }`}
+                              >
+                                {selectedElement.media.loop ? 'Looping' : 'Once'}
+                              </button>
+                            </div>
+
+                            {selectedElement.media.src && (
+                              <div className="text-[10px] text-zinc-500 truncate" title={selectedElement.media.src}>
+                                Track: {selectedElement.media.src.split('/').pop()}
+                              </div>
+                            )}
                           </div>
                         )}
                     </div>

@@ -112,11 +112,31 @@ export interface CanvaPage {
   subpages: CanvaSubpage[];
 }
 
+export interface BackgroundMusicConfig {
+  enabled: boolean;
+  url: string;
+  title?: string;
+  volume: number;
+  loop: boolean;
+  autoplay: boolean;
+}
+
+export interface SaveSnapshot {
+  id: string;
+  timestamp: number;
+  dateFormatted: string;
+  title: string;
+  pageCount: number;
+  data: SiteData;
+}
+
 export interface SiteData {
   title: string;
   canvasWidth: number;
   canvasHeight: number;
   audioTrack?: string;
+  backgroundMusic?: BackgroundMusicConfig;
+  lastSavedAt?: number;
   fonts: string[];
   pages: CanvaPage[];
 }

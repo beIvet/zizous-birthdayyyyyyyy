@@ -1,16 +1,24 @@
-import { CanvaPage, CanvasElement, EmbedConfig, SiteData } from '../types/site';
+import { CanvaPage, CanvasElement, EmbedConfig, SaveSnapshot, SiteData } from '../types/site';
 
 const DB_NAME = 'zizou_canva_studio_db';
 const STORE_NAME = 'site_store';
-const DATA_KEY = 'saved_site_v2_anim';
+const SNAPSHOTS_STORE = 'snapshots_store';
+const PRIMARY_KEY = 'zizou_master_save';
+const LEGACY_KEYS = ['saved_site_v2_anim', 'saved_site_v1', 'saved_site'];
+const LS_PRIMARY_KEY = 'zizou_master_save_ls';
+
+let lastSnapshotTime = 0;
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
+    const req = indexedDB.open(DB_NAME, 2);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME);
+      }
+      if (!db.objectStoreNames.contains(SNAPSHOTS_STORE)) {
+        db.createObjectStore(SNAPSHOTS_STORE, { keyPath: 'id' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -18,40 +26,263 @@ function openDB(): Promise<IDBDatabase> {
   });
 }
 
-export async function loadSavedSiteData(): Promise<SiteData | null> {
-  try {
-    const db = await openDB();
-    return await new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const req = tx.objectStore(STORE_NAME).get(DATA_KEY);
-      req.onsuccess = () => resolve((req.result as SiteData) ?? null);
-      req.onerror = () => reject(req.error);
-    });
-  } catch {
-    try {
-      const raw = localStorage.getItem(DATA_KEY);
-      return raw ? (JSON.parse(raw) as SiteData) : null;
-    } catch {
-      return null;
-    }
-  }
+function isValidSiteData(obj: any): obj is SiteData {
+  return (
+    obj &&
+    typeof obj === 'object' &&
+    Array.isArray(obj.pages) &&
+    obj.pages.length > 0 &&
+    Boolean(obj.pages[0]?.subpages)
+  );
 }
 
-export async function saveSiteData(data: SiteData): Promise<void> {
+export async function loadSavedSiteData(): Promise<SiteData | null> {
+  const candidates: Array<{ data: SiteData; source: string; timestamp: number }> = [];
+
+  // 1. Check IndexedDB across all known primary and legacy keys
+  try {
+    const db = await openDB();
+    const allKeys = [PRIMARY_KEY, ...LEGACY_KEYS];
+    for (const key of allKeys) {
+      try {
+        const item = await new Promise<SiteData | null>((resolve) => {
+          const tx = db.transaction(STORE_NAME, 'readonly');
+          const req = tx.objectStore(STORE_NAME).get(key);
+          req.onsuccess = () => resolve((req.result as SiteData) ?? null);
+          req.onerror = () => resolve(null);
+        });
+        if (isValidSiteData(item)) {
+          candidates.push({
+            data: item,
+            source: `indexedDB:${key}`,
+            timestamp: item.lastSavedAt || 1,
+          });
+        }
+      } catch {
+        // Continue checking other keys
+      }
+    }
+
+    // Also check if any snapshots exist if direct keys were empty
+    if (candidates.length === 0) {
+      try {
+        const snapshots = await new Promise<SaveSnapshot[]>((resolve) => {
+          const tx = db.transaction(SNAPSHOTS_STORE, 'readonly');
+          const req = tx.objectStore(SNAPSHOTS_STORE).getAll();
+          req.onsuccess = () => resolve((req.result as SaveSnapshot[]) || []);
+          req.onerror = () => resolve([]);
+        });
+        if (snapshots.length > 0) {
+          snapshots.sort((a, b) => b.timestamp - a.timestamp);
+          const newest = snapshots[0];
+          if (isValidSiteData(newest.data)) {
+            candidates.push({
+              data: newest.data,
+              source: `snapshot:${newest.id}`,
+              timestamp: newest.timestamp,
+            });
+          }
+        }
+      } catch {
+        // Ignore
+      }
+    }
+  } catch {
+    // IndexedDB failed, fallback to localStorage
+  }
+
+  // 2. Check localStorage across all primary and legacy keys
+  const lsKeys = [LS_PRIMARY_KEY, PRIMARY_KEY, ...LEGACY_KEYS];
+  for (const k of lsKeys) {
+    try {
+      const raw = localStorage.getItem(k);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (isValidSiteData(parsed)) {
+          candidates.push({
+            data: parsed,
+            source: `localStorage:${k}`,
+            timestamp: parsed.lastSavedAt || 0,
+          });
+        }
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  // Pick the most recent and most complete candidate
+  candidates.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  const best = candidates[0].data;
+
+  // Immediately mirror back to ALL stores to ensure everything stays in sync
+  saveSiteData(best, false).catch(() => {});
+
+  return best;
+}
+
+export async function saveSiteData(
+  data: SiteData,
+  createSnapshot = false,
+  snapshotTitle?: string
+): Promise<void> {
+  const stamped: SiteData = {
+    ...data,
+    lastSavedAt: Date.now(),
+  };
+
+  // 1. Synchronously mirror to localStorage first for instant durability
+  try {
+    const serialized = JSON.stringify(stamped);
+    localStorage.setItem(LS_PRIMARY_KEY, serialized);
+    localStorage.setItem(PRIMARY_KEY, serialized);
+    localStorage.setItem('saved_site_v2_anim', serialized);
+  } catch {
+    // If quota exceeded, store light metadata in localStorage
+    try {
+      localStorage.setItem(
+        'zizou_last_saved_meta',
+        JSON.stringify({ lastSavedAt: stamped.lastSavedAt, pageCount: stamped.pages.length })
+      );
+    } catch {
+      // Ignore
+    }
+  }
+
+  // 2. Save into IndexedDB primary key and legacy keys
   try {
     const db = await openDB();
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put(data, DATA_KEY);
+      const store = tx.objectStore(STORE_NAME);
+      store.put(stamped, PRIMARY_KEY);
+      store.put(stamped, 'saved_site_v2_anim');
+      store.put(stamped, 'saved_site_v1');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+
+    // 3. Auto-snapshot every 60 seconds or on explicit request
+    const now = Date.now();
+    if (createSnapshot || now - lastSnapshotTime > 60_000) {
+      lastSnapshotTime = now;
+      const snap: SaveSnapshot = {
+        id: generateId('snap'),
+        timestamp: now,
+        dateFormatted: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        }),
+        title:
+          snapshotTitle ||
+          (createSnapshot ? 'Manual checkpoint' : 'Auto-save checkpoint'),
+        pageCount: stamped.pages.length,
+        data: JSON.parse(JSON.stringify(stamped)),
+      };
+
+      try {
+        const snapTx = db.transaction(SNAPSHOTS_STORE, 'readwrite');
+        const snapStore = snapTx.objectStore(SNAPSHOTS_STORE);
+        snapStore.put(snap);
+
+        // Prune older snapshots if more than 20
+        const allReq = snapStore.getAll();
+        allReq.onsuccess = () => {
+          const snaps = (allReq.result as SaveSnapshot[]) || [];
+          if (snaps.length > 20) {
+            snaps.sort((a, b) => b.timestamp - a.timestamp);
+            const toDelete = snaps.slice(20);
+            const pruneTx = db.transaction(SNAPSHOTS_STORE, 'readwrite');
+            const pruneStore = pruneTx.objectStore(SNAPSHOTS_STORE);
+            toDelete.forEach((s) => pruneStore.delete(s.id));
+          }
+        };
+      } catch {
+        // Ignore snapshot errors
+      }
+    }
+  } catch {
+    // Handled by localStorage fallback
+  }
+}
+
+export function saveSiteDataSync(data: SiteData): void {
+  try {
+    const stamped = { ...data, lastSavedAt: Date.now() };
+    const serialized = JSON.stringify(stamped);
+    localStorage.setItem(LS_PRIMARY_KEY, serialized);
+    localStorage.setItem(PRIMARY_KEY, serialized);
+  } catch {
+    // Ignore
+  }
+}
+
+export async function getSavedSnapshots(): Promise<SaveSnapshot[]> {
+  try {
+    const db = await openDB();
+    return await new Promise<SaveSnapshot[]>((resolve) => {
+      const tx = db.transaction(SNAPSHOTS_STORE, 'readonly');
+      const req = tx.objectStore(SNAPSHOTS_STORE).getAll();
+      req.onsuccess = () => {
+        const snaps = (req.result as SaveSnapshot[]) || [];
+        snaps.sort((a, b) => b.timestamp - a.timestamp);
+        resolve(snaps);
+      };
+      req.onerror = () => resolve([]);
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function createManualSnapshot(
+  data: SiteData,
+  title: string
+): Promise<SaveSnapshot> {
+  const now = Date.now();
+  const snap: SaveSnapshot = {
+    id: generateId('snap'),
+    timestamp: now,
+    dateFormatted: new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }),
+    title: title.trim() || 'Manual checkpoint',
+    pageCount: data.pages.length,
+    data: JSON.parse(JSON.stringify(data)),
+  };
+
+  try {
+    const db = await openDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(SNAPSHOTS_STORE, 'readwrite');
+      tx.objectStore(SNAPSHOTS_STORE).put(snap);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
   } catch {
-    try {
-      localStorage.setItem(DATA_KEY, JSON.stringify(data));
-    } catch {
-      // Ignore storage quota errors
-    }
+    // Ignore
+  }
+  return snap;
+}
+
+export async function deleteSnapshot(snapshotId: string): Promise<void> {
+  try {
+    const db = await openDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(SNAPSHOTS_STORE, 'readwrite');
+      tx.objectStore(SNAPSHOTS_STORE).delete(snapshotId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    // Ignore
   }
 }
 
@@ -59,8 +290,9 @@ export async function clearSavedSiteData(): Promise<void> {
   try {
     const db = await openDB();
     await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).delete(DATA_KEY);
+      const tx = db.transaction([STORE_NAME, SNAPSHOTS_STORE], 'readwrite');
+      tx.objectStore(STORE_NAME).clear();
+      tx.objectStore(SNAPSHOTS_STORE).clear();
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
@@ -68,7 +300,10 @@ export async function clearSavedSiteData(): Promise<void> {
     // Ignore
   }
   try {
-    localStorage.removeItem(DATA_KEY);
+    localStorage.removeItem(LS_PRIMARY_KEY);
+    localStorage.removeItem(PRIMARY_KEY);
+    localStorage.removeItem('saved_site_v2_anim');
+    localStorage.removeItem('saved_site_v1');
   } catch {
     // Ignore
   }
