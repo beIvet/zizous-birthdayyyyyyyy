@@ -6,18 +6,22 @@ import {
   Plus,
   RotateCcw,
   ShieldCheck,
+  Sparkles,
   Trash2,
   Upload,
   X,
 } from 'lucide-react';
 import { SaveSnapshot } from '../types/site';
+import { SavedVersionInfo } from '../utils/siteHelpers';
+
+export type BackupItem = SaveSnapshot | SavedVersionInfo;
 
 interface BackupsModalProps {
   isOpen: boolean;
-  snapshots: SaveSnapshot[];
+  snapshots: BackupItem[];
   onClose: () => void;
   onCreateSnapshot: (title: string) => Promise<void>;
-  onRestoreSnapshot: (snapshot: SaveSnapshot) => void;
+  onRestoreSnapshot: (snapshot: BackupItem) => void;
   onDeleteSnapshot: (snapshotId: string) => Promise<void>;
   onExportJson: () => void;
   onImportJson: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -140,7 +144,13 @@ export const BackupsModal: React.FC<BackupsModalProps> = ({
                         <h4 className="text-xs font-semibold text-zinc-200 truncate">
                           {snap.title}
                         </h4>
-                        <span className="text-[10px] text-amber-400/90 font-mono-num px-1.5 py-0.5 rounded bg-amber-400/10">
+                        {'userEditsScore' in snap && Boolean((snap as any).userEditsScore > 0) && (
+                          <span className="text-[10px] text-emerald-400 font-medium px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 flex items-center gap-1 shrink-0">
+                            <Sparkles className="w-2.5 h-2.5" />
+                            Has Custom Edits
+                          </span>
+                        )}
+                        <span className="text-[10px] text-amber-400/90 font-mono-num px-1.5 py-0.5 rounded bg-amber-400/10 shrink-0">
                           {formatRelativeTime(snap.timestamp)}
                         </span>
                       </div>
@@ -148,6 +158,12 @@ export const BackupsModal: React.FC<BackupsModalProps> = ({
                         <span>{snap.dateFormatted}</span>
                         <span>·</span>
                         <span>{snap.pageCount} pages</span>
+                        {'source' in snap && (
+                          <>
+                            <span>·</span>
+                            <span className="truncate max-w-[150px]">{(snap as any).source}</span>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>

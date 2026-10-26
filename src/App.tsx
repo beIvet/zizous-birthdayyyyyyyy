@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   CheckCircle2,
   Clock,
+  CloudUpload,
   Download,
   Eye,
   EyeOff,
@@ -15,6 +16,7 @@ import {
   RotateCcw,
   Save,
   ShieldCheck,
+  Smartphone,
   Sparkles,
   Undo2,
   Redo2,
@@ -34,24 +36,28 @@ import {
 } from './types/site';
 import {
   clearSavedSiteData,
+  countUserEdits,
   createManualSnapshot,
   deleteSnapshot,
   generateId,
+  getAllSavedVersions,
   getSavedSnapshots,
   getScrollingLetterInfo,
   loadSavedSiteData,
   mergeAnimationsIfMissing,
   parseEmbedInput,
   resolveLinkToPageIndex,
+  SavedVersionInfo,
   saveSiteData,
   saveSiteDataSync,
+  syncSiteDataToServer,
   ungroupElement,
 } from './utils/siteHelpers';
 import { PageStage } from './components/PageStage';
 import { PageSidebar } from './components/PageSidebar';
 import { InspectorPanel } from './components/InspectorPanel';
 import { LetterComposerModal } from './components/LetterComposerModal';
-import { BackupsModal } from './components/BackupsModal';
+import { BackupsModal, BackupItem } from './components/BackupsModal';
 import { AudioSettingsModal } from './components/AudioSettingsModal';
 
 const INITIAL_SITE_DATA = rawCanvaData as unknown as SiteData;
@@ -90,6 +96,8 @@ export function App() {
   const [historyModalOpen, setHistoryModalOpen] = useState<boolean>(false);
   const [musicModalOpen, setMusicModalOpen] = useState<boolean>(false);
   const [snapshots, setSnapshots] = useState<SaveSnapshot[]>([]);
+  const [allSavedVersions, setAllSavedVersions] = useState<SavedVersionInfo[]>([]);
+  const [dismissedRecoveryBanner, setDismissedRecoveryBanner] = useState<boolean>(false);
 
   const pastRef = useRef<SiteData[]>([]);
   const futureRef = useRef<SiteData[]>([]);
@@ -109,6 +117,8 @@ export function App() {
     try {
       const list = await getSavedSnapshots();
       setSnapshots(list);
+      const allVers = await getAllSavedVersions();
+      setAllSavedVersions(allVers);
     } catch {
       // Ignore
     }
@@ -133,6 +143,51 @@ export function App() {
     [refreshSnapshots]
   );
 
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState<boolean>(false);
+  const hasUnsavedChangesRef = useRef<boolean>(false);
+  const [nextAutosaveInSec, setNextAutosaveInSec] = useState<number>(300); // 5 minutes
+
+  const markUnsaved = useCallback(() => {
+    setHasUnsavedChanges(true);
+    hasUnsavedChangesRef.current = true;
+    setSaveStatus('unsaved');
+  }, []);
+
+  const handleManualSave = useCallback(
+    async (title = 'Manual Save') => {
+      await performSave(latestCommittedRef.current, true, title);
+      setHasUnsavedChanges(false);
+      hasUnsavedChangesRef.current = false;
+      setNextAutosaveInSec(300);
+      showToast('✓ All changes saved!');
+    },
+    [performSave, showToast]
+  );
+
+  const [isSyncingServer, setIsSyncingServer] = useState<boolean>(false);
+
+  const handleSyncToProjectBuild = useCallback(async () => {
+    setIsSyncingServer(true);
+    try {
+      const ok = await syncSiteDataToServer(latestCommittedRef.current);
+      if (ok) {
+        setHasUnsavedChanges(false);
+        hasUnsavedChangesRef.current = false;
+        setNextAutosaveInSec(300);
+        setSaveStatus('saved');
+        showToast(
+          '✓ Synced to Project! When you publish, your phone and all devices will see your exact edits.'
+        );
+      } else {
+        showToast('Edits saved locally. Server sync will retry automatically.');
+      }
+    } catch {
+      showToast('Edits saved locally in browser.');
+    } finally {
+      setIsSyncingServer(false);
+    }
+  }, [showToast]);
+
   useEffect(() => {
     if (!toastMsg) return;
     const t = setTimeout(() => setToastMsg(null), 2600);
@@ -141,12 +196,23 @@ export function App() {
 
   useEffect(() => {
     let mounted = true;
-    loadSavedSiteData().then((saved) => {
+    getAllSavedVersions().then((versions) => {
       if (!mounted) return;
-      if (saved && Array.isArray(saved.pages) && saved.pages.length > 0) {
-        const merged = mergeAnimationsIfMissing(saved, INITIAL_SITE_DATA);
+      setAllSavedVersions(versions);
+      const edited = versions.find((v) => v.userEditsScore > 0);
+      if (edited) {
+        const merged = mergeAnimationsIfMissing(edited.data, INITIAL_SITE_DATA);
         setSiteData(merged);
         latestCommittedRef.current = merged;
+      } else {
+        loadSavedSiteData().then((saved) => {
+          if (!mounted) return;
+          if (saved && Array.isArray(saved.pages) && saved.pages.length > 0) {
+            const merged = mergeAnimationsIfMissing(saved, INITIAL_SITE_DATA);
+            setSiteData(merged);
+            latestCommittedRef.current = merged;
+          }
+        });
       }
       setIsLoaded(true);
       refreshSnapshots();
@@ -156,14 +222,31 @@ export function App() {
     };
   }, [refreshSnapshots]);
 
+  // Periodic Auto-Save every 5 minutes (300 seconds)
   useEffect(() => {
     if (!isLoaded) return;
-    setSaveStatus('saving');
-    const timer = setTimeout(() => {
-      performSave(siteData);
-    }, 280);
-    return () => clearTimeout(timer);
-  }, [siteData, isLoaded, performSave]);
+
+    const intervalTimer = setInterval(() => {
+      setNextAutosaveInSec((prev) => {
+        if (prev <= 1) {
+          if (hasUnsavedChangesRef.current && latestCommittedRef.current) {
+            performSave(
+              latestCommittedRef.current,
+              true,
+              '5-minute auto-save checkpoint'
+            );
+            setHasUnsavedChanges(false);
+            hasUnsavedChangesRef.current = false;
+            showToast('✓ Auto-saved changes (5-min interval)');
+          }
+          return 300;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(intervalTimer);
+  }, [isLoaded, performSave, showToast]);
 
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -191,13 +274,12 @@ export function App() {
     const handleSaveShortcut = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        performSave(latestCommittedRef.current, true, 'User saved (Ctrl+S)');
-        showToast('✓ All changes saved securely to storage!');
+        handleManualSave('User saved (Ctrl+S)');
       }
     };
     window.addEventListener('keydown', handleSaveShortcut);
     return () => window.removeEventListener('keydown', handleSaveShortcut);
-  }, [performSave, showToast]);
+  }, [handleManualSave]);
 
   useEffect(() => {
     const bgConfig = siteData.backgroundMusic;
@@ -232,11 +314,11 @@ export function App() {
         futureRef.current = [];
         latestCommittedRef.current = next;
         forceHistoryTick((n) => n + 1);
-        performSave(next, false);
+        markUnsaved();
         return next;
       });
     },
-    [performSave]
+    [markUnsaved]
   );
 
   const commitTransientDragResize = useCallback(() => {
@@ -249,11 +331,11 @@ export function App() {
         futureRef.current = [];
         latestCommittedRef.current = current;
         forceHistoryTick((n) => n + 1);
-        performSave(current, false);
+        markUnsaved();
       }
       return current;
     });
-  }, [performSave]);
+  }, [markUnsaved]);
 
   const handleUndo = useCallback(() => {
     if (pastRef.current.length === 0) return;
@@ -894,13 +976,40 @@ export function App() {
   );
 
   const handleRestoreSnapshot = useCallback(
-    (snapshot: SaveSnapshot) => {
-      applyCommittedUpdate(() => snapshot.data);
-      performSave(snapshot.data, true, `Restored: ${snapshot.title}`);
+    (snapshot: BackupItem) => {
+      const merged = mergeAnimationsIfMissing(snapshot.data, INITIAL_SITE_DATA);
+      applyCommittedUpdate(() => merged);
+      performSave(merged, true, `Restored: ${snapshot.title}`);
       showToast(`✓ Restored version "${snapshot.title}"!`);
+      setDismissedRecoveryBanner(true);
     },
     [applyCommittedUpdate, performSave, showToast]
   );
+
+  const currentEditScore = countUserEdits(siteData);
+  const bestRecoverableVersion = allSavedVersions.find(
+    (v) => v.userEditsScore > currentEditScore
+  );
+  const showRecoveryBanner =
+    !dismissedRecoveryBanner && Boolean(bestRecoverableVersion);
+
+  const handleRestoreBestVersion = useCallback(() => {
+    if (!bestRecoverableVersion) return;
+    const merged = mergeAnimationsIfMissing(
+      bestRecoverableVersion.data,
+      INITIAL_SITE_DATA
+    );
+    applyCommittedUpdate(() => merged);
+    performSave(
+      merged,
+      true,
+      `Restored edits from ${bestRecoverableVersion.title}`
+    );
+    showToast(
+      `✓ Restored ${bestRecoverableVersion.userEditsScore} previous edits successfully!`
+    );
+    setDismissedRecoveryBanner(true);
+  }, [bestRecoverableVersion, applyCommittedUpdate, performSave, showToast]);
 
   const handleDeleteSnapshot = useCallback(
     async (snapshotId: string) => {
@@ -1006,6 +1115,49 @@ export function App() {
         className="hidden"
       />
 
+      {showRecoveryBanner && bestRecoverableVersion && (
+        <div className="bg-amber-400 text-zinc-950 px-4 py-2.5 flex items-center justify-between text-xs font-medium shadow-xl z-50 shrink-0 border-b border-amber-500">
+          <div className="flex items-center gap-2.5">
+            <Sparkles className="w-4 h-4 text-zinc-950 shrink-0" />
+            <div>
+              <span className="font-bold">
+                Found your previous saved edits ({bestRecoverableVersion.userEditsScore} customizations from {bestRecoverableVersion.dateFormatted})!
+              </span>
+              <span className="opacity-80 ml-1.5 hidden sm:inline">
+                Click Restore to bring back your customized text, background song, and photos.
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleRestoreBestVersion}
+              className="px-3.5 py-1 bg-zinc-950 hover:bg-zinc-800 text-amber-300 rounded-lg font-bold text-xs cursor-pointer shadow transition-colors flex items-center gap-1.5"
+            >
+              <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+              Restore My Edits
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                refreshSnapshots();
+                setHistoryModalOpen(true);
+              }}
+              className="px-2.5 py-1 bg-black/15 hover:bg-black/25 text-zinc-950 rounded-lg text-xs cursor-pointer font-semibold"
+            >
+              View Backups ({allSavedVersions.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setDismissedRecoveryBanner(true)}
+              className="p-1 text-zinc-950 hover:bg-black/15 rounded cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {mode === 'editor' ? (
         <>
           <header className="flex items-center justify-between gap-8 px-6 py-3 bg-zinc-950 border-b border-zinc-800 shrink-0">
@@ -1074,27 +1226,47 @@ export function App() {
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
                   Saving...
                 </span>
+              ) : hasUnsavedChanges ? (
+                <span
+                  title={`Unsaved edits in memory. Automatic background save in ${Math.floor(nextAutosaveInSec / 60)}m ${nextAutosaveInSec % 60}s`}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-amber-400/40 text-amber-300 text-xs font-medium"
+                >
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                  Unsaved (auto-save in {Math.floor(nextAutosaveInSec / 60)}:{String(nextAutosaveInSec % 60).padStart(2, '0')})
+                </span>
               ) : (
                 <span
-                  title={`All edits safely stored locally. Last saved at ${lastSavedFormatted}`}
+                  title={`All edits safely saved. Periodic auto-save runs every 5 minutes (next in ${Math.floor(nextAutosaveInSec / 60)}m)`}
                   className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-emerald-500/30 text-emerald-400 text-xs font-medium"
                 >
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  Saved
+                  Saved ({lastSavedFormatted})
                 </span>
               )}
 
               <button
                 type="button"
-                onClick={() => {
-                  performSave(latestCommittedRef.current, true, 'User saved');
-                  showToast('✓ All changes saved securely to storage!');
-                }}
+                onClick={() => handleManualSave('User saved')}
                 title="Save changes now (Ctrl+S / Cmd+S)"
                 className="px-3 py-1.5 text-xs font-medium text-zinc-200 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors"
               >
                 <Save className="w-3.5 h-3.5 text-amber-400" />
                 Save Now
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSyncToProjectBuild}
+                disabled={isSyncingServer}
+                title="Write edits to project files so publishing includes all changes on mobile phone and other devices"
+                className="px-3 py-1.5 text-xs font-semibold text-amber-300 bg-amber-400/20 hover:bg-amber-400/30 border border-amber-400/50 rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors shadow-sm"
+              >
+                {isSyncingServer ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <CloudUpload className="w-3.5 h-3.5 text-amber-400" />
+                )}
+                <span>Sync to Published Site</span>
               </button>
 
               <button
@@ -1416,14 +1588,25 @@ export function App() {
 
               <button
                 type="button"
-                onClick={() => {
-                  performSave(latestCommittedRef.current, true, 'User saved in preview');
-                  showToast('✓ All changes saved securely!');
-                }}
+                onClick={() => handleManualSave('User saved in preview')}
                 title="Save Now (Ctrl+S / Cmd+S)"
                 className="p-1.5 rounded-lg hover:bg-white/10 text-zinc-300 hover:text-emerald-400 transition-colors cursor-pointer"
               >
                 <Save className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSyncToProjectBuild}
+                disabled={isSyncingServer}
+                title="Sync edits to project files for publishing to mobile and all devices"
+                className="p-1.5 rounded-lg hover:bg-white/10 text-amber-400 hover:text-amber-300 transition-colors cursor-pointer"
+              >
+                {isSyncingServer ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <CloudUpload className="w-3.5 h-3.5" />
+                )}
               </button>
 
               <button
@@ -1638,7 +1821,7 @@ export function App() {
 
       <BackupsModal
         isOpen={historyModalOpen}
-        snapshots={snapshots}
+        snapshots={allSavedVersions.length > 0 ? allSavedVersions : snapshots}
         onClose={() => setHistoryModalOpen(false)}
         onCreateSnapshot={handleCreateSnapshot}
         onRestoreSnapshot={handleRestoreSnapshot}

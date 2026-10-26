@@ -36,93 +36,261 @@ function isValidSiteData(obj: any): obj is SiteData {
   );
 }
 
-export async function loadSavedSiteData(): Promise<SiteData | null> {
-  const candidates: Array<{ data: SiteData; source: string; timestamp: number }> = [];
-
-  // 1. Check IndexedDB across all known primary and legacy keys
+export async function syncSiteDataToServer(data: SiteData): Promise<boolean> {
   try {
-    const db = await openDB();
-    const allKeys = [PRIMARY_KEY, ...LEGACY_KEYS];
-    for (const key of allKeys) {
-      try {
-        const item = await new Promise<SiteData | null>((resolve) => {
-          const tx = db.transaction(STORE_NAME, 'readonly');
-          const req = tx.objectStore(STORE_NAME).get(key);
-          req.onsuccess = () => resolve((req.result as SiteData) ?? null);
-          req.onerror = () => resolve(null);
-        });
-        if (isValidSiteData(item)) {
-          candidates.push({
-            data: item,
-            source: `indexedDB:${key}`,
-            timestamp: item.lastSavedAt || 1,
-          });
-        }
-      } catch {
-        // Continue checking other keys
+    const res = await fetch('/api/site-data', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ siteData: data }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function fetchServerSiteData(): Promise<SiteData | null> {
+  try {
+    const res = await fetch('/api/site-data', {
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (isValidSiteData(data)) {
+        return data;
       }
     }
+  } catch {
+    // Offline or server not responding
+  }
+  return null;
+}
 
-    // Also check if any snapshots exist if direct keys were empty
-    if (candidates.length === 0) {
-      try {
-        const snapshots = await new Promise<SaveSnapshot[]>((resolve) => {
-          const tx = db.transaction(SNAPSHOTS_STORE, 'readonly');
-          const req = tx.objectStore(SNAPSHOTS_STORE).getAll();
-          req.onsuccess = () => resolve((req.result as SaveSnapshot[]) || []);
-          req.onerror = () => resolve([]);
-        });
-        if (snapshots.length > 0) {
-          snapshots.sort((a, b) => b.timestamp - a.timestamp);
-          const newest = snapshots[0];
-          if (isValidSiteData(newest.data)) {
-            candidates.push({
-              data: newest.data,
-              source: `snapshot:${newest.id}`,
-              timestamp: newest.timestamp,
-            });
+export function countUserEdits(data: any): number {
+  if (!isValidSiteData(data)) return 0;
+  let score = 0;
+
+  if (
+    data.backgroundMusic?.enabled ||
+    (data.backgroundMusic?.url && data.backgroundMusic.url.length > 0)
+  ) {
+    score += 50;
+  }
+  if (
+    data.audioTrack &&
+    !data.audioTrack.includes('64d550272432c09e29bb481d61f6e831')
+  ) {
+    score += 50;
+  }
+  if (data.title && data.title !== 'Happy Birthday Zizou!!') {
+    score += 20;
+  }
+  if (data.pages.length !== 26) {
+    score += Math.abs(data.pages.length - 26) * 30;
+  }
+
+  // Count modified text, elements, embeds
+  for (const p of data.pages) {
+    if (p.subpages && p.subpages.length > 1) {
+      score += (p.subpages.length - 1) * 15;
+    }
+    for (const sp of p.subpages || []) {
+      for (const el of sp.elements || []) {
+        if (el.embed) score += 40;
+        if ((el as any).customMedia || (el as any).userAdded) score += 30;
+        if (el.type === 'text' && el.textStyle?.text) {
+          const t = el.textStyle.text.trim();
+          if (t.length > 0 && !t.includes('Lorem ipsum')) {
+            score += 0.5;
           }
+        }
+      }
+    }
+  }
+
+  if (data.lastSavedAt && data.lastSavedAt > 1000) {
+    score += 1;
+  }
+
+  return Math.round(score);
+}
+
+export interface SavedVersionInfo {
+  id: string;
+  source: string;
+  title: string;
+  timestamp: number;
+  dateFormatted: string;
+  pageCount: number;
+  userEditsScore: number;
+  data: SiteData;
+}
+
+export async function getAllSavedVersions(): Promise<SavedVersionInfo[]> {
+  const map = new Map<string, SavedVersionInfo>();
+
+  const addCandidate = (
+    data: any,
+    source: string,
+    title?: string,
+    forcedTime?: number
+  ) => {
+    if (!isValidSiteData(data)) return;
+    const timestamp = forcedTime || data.lastSavedAt || 0;
+    const score = countUserEdits(data);
+    const key = `${data.pages.length}_${data.pages[0]?.id}_${data.title}_${score}_${data.audioTrack || ''}`;
+
+    const dateFormatted =
+      timestamp > 0
+        ? new Date(timestamp).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          })
+        : 'Previous save';
+
+    const info: SavedVersionInfo = {
+      id: generateId('ver'),
+      source,
+      title:
+        title ||
+        (score > 0
+          ? `Saved Edits (${score} modifications)`
+          : 'Original Canva Site'),
+      timestamp,
+      dateFormatted,
+      pageCount: data.pages.length,
+      userEditsScore: score,
+      data,
+    };
+
+    if (!map.has(key) || map.get(key)!.timestamp < timestamp) {
+      map.set(key, info);
+    }
+  };
+
+  // 1. Scan snapshots_store in IndexedDB (ALL historical snapshots)
+  try {
+    const db = await openDB();
+    const snapTx = db.transaction(SNAPSHOTS_STORE, 'readonly');
+    const req = snapTx.objectStore(SNAPSHOTS_STORE).getAll();
+    const snaps = await new Promise<SaveSnapshot[]>((res) => {
+      req.onsuccess = () => res((req.result as SaveSnapshot[]) || []);
+      req.onerror = () => res([]);
+    });
+    for (const snap of snaps) {
+      if (isValidSiteData(snap.data)) {
+        addCandidate(
+          snap.data,
+          `Backup snapshot: ${snap.title}`,
+          snap.title,
+          snap.timestamp
+        );
+      }
+    }
+  } catch {
+    // Continue
+  }
+
+  // 2. Scan site_store in IndexedDB
+  try {
+    const db = await openDB();
+    const siteTx = db.transaction(STORE_NAME, 'readonly');
+    const store = siteTx.objectStore(STORE_NAME);
+    const knownKeys = [PRIMARY_KEY, ...LEGACY_KEYS];
+    for (const k of knownKeys) {
+      try {
+        const itemReq = store.get(k);
+        const item = await new Promise<any>((res) => {
+          itemReq.onsuccess = () => res(itemReq.result);
+          itemReq.onerror = () => res(null);
+        });
+        if (isValidSiteData(item)) {
+          addCandidate(item, `IndexedDB (${k})`, `Storage (${k})`);
         }
       } catch {
         // Ignore
       }
     }
   } catch {
-    // IndexedDB failed, fallback to localStorage
+    // Continue
   }
 
-  // 2. Check localStorage across all primary and legacy keys
-  const lsKeys = [LS_PRIMARY_KEY, PRIMARY_KEY, ...LEGACY_KEYS];
-  for (const k of lsKeys) {
-    try {
-      const raw = localStorage.getItem(k);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (isValidSiteData(parsed)) {
-          candidates.push({
-            data: parsed,
-            source: `localStorage:${k}`,
-            timestamp: parsed.lastSavedAt || 0,
-          });
+  // 3. Scan ALL localStorage keys
+  try {
+    if (typeof localStorage !== 'undefined') {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        if (
+          k.startsWith('zizou_') ||
+          k.startsWith('saved_') ||
+          k.includes('site') ||
+          k.includes('canva') ||
+          k.includes('snap')
+        ) {
+          try {
+            const raw = localStorage.getItem(k);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              if (isValidSiteData(parsed)) {
+                addCandidate(parsed, `localStorage (${k})`, `Local save (${k})`);
+              }
+            }
+          } catch {
+            // Ignore
+          }
         }
       }
-    } catch {
-      // Ignore
     }
+  } catch {
+    // Continue
   }
 
-  if (candidates.length === 0) {
-    return null;
+  // 4. Also check server site data
+  try {
+    const srv = await fetchServerSiteData();
+    if (srv && isValidSiteData(srv)) {
+      addCandidate(
+        srv,
+        'server:/api/site-data',
+        'Server Project Data',
+        srv.lastSavedAt || 0
+      );
+    }
+  } catch {
+    // Continue
   }
 
-  // Pick the most recent and most complete candidate
-  candidates.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-  const best = candidates[0].data;
+  const list = Array.from(map.values());
+  // Sort: highest user edits score first, then newest timestamp
+  list.sort((a, b) => {
+    if (b.userEditsScore !== a.userEditsScore) {
+      return b.userEditsScore - a.userEditsScore;
+    }
+    return (b.timestamp || 0) - (a.timestamp || 0);
+  });
 
-  // Immediately mirror back to ALL stores to ensure everything stays in sync
-  saveSiteData(best, false).catch(() => {});
+  return list;
+}
 
-  return best;
+export async function loadSavedSiteData(): Promise<SiteData | null> {
+  const versions = await getAllSavedVersions();
+
+  // If any candidate has actual user edits (score > 0), load that candidate immediately!
+  const edited = versions.filter((v) => v.userEditsScore > 0);
+  if (edited.length > 0) {
+    return edited[0].data;
+  }
+
+  // If no edited versions exist anywhere, fall back to the newest available version
+  if (versions.length > 0) {
+    return versions[0].data;
+  }
+
+  return null;
 }
 
 export async function saveSiteData(
@@ -166,9 +334,9 @@ export async function saveSiteData(
       tx.onerror = () => reject(tx.error);
     });
 
-    // 3. Auto-snapshot every 60 seconds or on explicit request
+    // 3. Auto-snapshot every 5 minutes or on explicit request
     const now = Date.now();
-    if (createSnapshot || now - lastSnapshotTime > 60_000) {
+    if (createSnapshot || now - lastSnapshotTime > 300_000) {
       lastSnapshotTime = now;
       const snap: SaveSnapshot = {
         id: generateId('snap'),
@@ -209,6 +377,9 @@ export async function saveSiteData(
   } catch {
     // Handled by localStorage fallback
   }
+
+  // 4. Always sync to server so published builds on disk have the exact user edits
+  syncSiteDataToServer(stamped).catch(() => {});
 }
 
 export function saveSiteDataSync(data: SiteData): void {
@@ -217,6 +388,12 @@ export function saveSiteDataSync(data: SiteData): void {
     const serialized = JSON.stringify(stamped);
     localStorage.setItem(LS_PRIMARY_KEY, serialized);
     localStorage.setItem(PRIMARY_KEY, serialized);
+    if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+      const blob = new Blob([JSON.stringify({ siteData: stamped })], {
+        type: 'application/json',
+      });
+      navigator.sendBeacon('/api/site-data', blob);
+    }
   } catch {
     // Ignore
   }
